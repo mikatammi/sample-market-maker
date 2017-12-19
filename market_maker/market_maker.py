@@ -7,6 +7,7 @@ import random
 import requests
 import atexit
 import signal
+import csv
 
 from market_maker import bitmex
 from market_maker.settings import settings
@@ -213,6 +214,25 @@ class OrderManager:
         else:
             logger.info("Order Manager initializing, connecting to BitMEX. Live run: executing real trades.")
 
+        datetimestring = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        csv_filename = "order-rounds-%s.csv" % datetimestring
+        self.csv_file = open(csv_filename, 'w')
+        self.csv_fieldnames = ['localtime',
+                               'instrument',
+                               'ticker_buy',
+                               'ticker_sell',
+                               'start_position_buy',
+                               'start_position_sell',
+                               'start_position_mid',
+                               'current_xbt_balance',
+                               'current_contract_position',
+                               'avg_cost_price',
+                               'avg_entry_price',
+                               'contracts_traded_this_run',
+                               'total_contract_delta']
+        self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self.csv_fieldnames)
+        self.csv_writer.writeheader()
+
         self.start_time = datetime.now()
         self.instrument = self.exchange.get_instrument()
         self.starting_qty = self.exchange.get_delta()
@@ -248,6 +268,15 @@ class OrderManager:
             logger.info("Avg Entry Price: %.*f" % (tickLog, float(position['avgEntryPrice'])))
         logger.info("Contracts Traded This Run: %d" % (self.running_qty - self.starting_qty))
         logger.info("Total Contract Delta: %.4f XBT" % self.exchange.calc_delta()['spot'])
+
+        csv_values = {'current_xbt_balance': XBt_to_XBT(self.start_XBt),
+                      'current_contract_position': self.running_qty,
+                      'avg_cost_price': float(position['avgCostPrice']),
+                      'avg_entry_price': float(position['avgEntryPrice']),
+                      'contracts_traded_this_run': self.running_qty - self.starting_qty,
+                      'total_contract_delta': self.exchange.calc_delta()['spot']}
+
+        return csv_values
 
     def get_ticker(self):
         ticker = self.exchange.get_ticker()
@@ -453,6 +482,7 @@ class OrderManager:
 
         # Get ticker, which sets price offsets and prints some debugging info.
         ticker = self.get_ticker()
+        self.ticker = ticker
 
         # Sanity check:
         if self.get_price_offset(-1) >= ticker["sell"] or self.get_price_offset(1) <= ticker["buy"]:
@@ -514,7 +544,17 @@ class OrderManager:
                 self.restart()
 
             self.sanity_check()  # Ensures health of mm - several cut-out points here
-            self.print_status()  # Print skew, delta, etc
+            csv_values = self.print_status()  # Print skew, delta, etc
+            csv_values.update({'localtime': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                               'instrument': self.instrument['symbol'],
+                               'ticker_buy': self.ticker['buy'],
+                               'ticker_sell': self.ticker['sell'],
+                               'start_position_buy': self.start_position_buy,
+                               'start_position_sell': self.start_position_sell,
+                               'start_position_mid': self.start_position_mid})
+            self.csv_writer.writerow(csv_values)
+            self.csv_file.flush() # Flush data to file on every new row
+
             self.place_orders()  # Creates desired orders and converges to existing orders
 
     def restart(self):
